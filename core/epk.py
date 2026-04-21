@@ -2,40 +2,87 @@
 core/epk.py — EPK encrypt/decrypt for FSN Remastered
 
 EPK files are encrypted KiriKiri script locale packages.
-The encryption uses a keystream derived from:
-  - SomeKey.bin  (5120 bytes, dumped from game process at 0x1409E6500)
-  - The EPK filename stem (e.g. "1jftmqc2rr04kclvl0ql71s2ef")
 
-Since the key-init algorithm (sub_1404C80B0 + DecEncEPK from the C++ source)
-is not open-sourced, we delegate to the pre-compiled main.exe via subprocess.
+ENCRYPTION KEY DERIVATION
+─────────────────────────
+main.exe derives the keystream from two inputs:
+  1. SomeKey.bin  (5120 bytes — dumped from game process at VA 0x1409E6500)
+  2. The EPK filename STEM — specifically the 26-char hash, e.g. "1jftmqc2rr04kclvl0ql71s2ef"
 
-EPK file layout (from kurikomoe/FSNr_tools):
-    [encrypted payload ............. N bytes, 4-byte aligned]
-    [0x10 bytes zero padding                                 ]
-    [raw_size: 4 bytes BE + 0xC bytes zero pad  (= 0x10)    ]
-    [MD5 hash: 16 bytes  (md5(payload + MAGIC_KEY))         ]
-    Total trailer = 0x30 bytes
+CRITICAL BUG (now fixed):
+  When FPD extracts EPK files, they get the full path as filename using '#' as separator:
+    "root#data#locale#ck#epk#HASH.epk"
+  If this full name is passed to main.exe, it reads the stem as:
+    "root#data#locale#ck#epk#HASH"   <-- WRONG key, 46 chars
+  Instead of:
+    "HASH"                            <-- correct key, 26 chars
+  Wrong key → wrong keystream → crash → exit code 3221225781
 
-The MD5 magic constant is: "8FE9D249BD2689BB4B70F5AE88A9E645"
+  Fix: always rename to "HASH.epk" in an isolated tempdir before running main.exe.
+  This is why pack00m.bin EPKs failed while manually-renamed patch00m EPKs worked.
 
-Credit: kurikomoe/FSNr_tools, Jannabie/FSN_Decompiler
+EPK FILE LAYOUT
+───────────────
+  [ encrypted payload ···· N bytes ]
+  [ 0x10 bytes zero padding        ]
+  [ uint32 BE raw_size + 12 zeros  ]  (= 0x10 bytes)
+  [ 16 bytes MD5 checksum          ]  (md5(payload + MAGIC_KEY))
+  Total trailer = 0x30 bytes
+
+  MAGIC_KEY = "8FE9D249BD2689BB4B70F5AE88A9E645"
+
+Credit: kurikomoe/FSNr_tools, @tea
 """
 
 import os
+import re
 import sys
-import struct
-import hashlib
-import subprocess
-import tempfile
 import shutil
 import logging
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional, Union
 
 log = logging.getLogger(__name__)
 
-MAGIC_KEY = b"8FE9D249BD2689BB4B70F5AE88A9E645"
-TRAILER_SIZE = 0x30
+# Matches a 26-char lowercase alphanumeric EPK hash stem
+_HASH_RE = re.compile(r'^[0-9a-z]{10,}$')
+
+
+def extract_epk_stem(path: Path) -> str:
+    """
+    Extract the correct EPK hash stem from ANY filename style.
+
+    Examples:
+      "HASH.epk"                                → "HASH"
+      "root#data#locale#ck#epk#HASH.epk"        → "HASH"
+      "root#data#locale#ck#epk#HASH.epk_dec"    → "HASH"
+      "root_data_locale_ck_epk_HASH.epk_dec"    → "HASH"
+      "uistring.epk"                            → "uistring"
+      "statictext.epk_dec"                      → "statictext"
+
+    This is critical because main.exe uses this stem as its crypto key input.
+    """
+    name = path.name
+
+    # Strip known suffixes
+    for suffix in ('.epk_dec', '.epk_enc', '.epk'):
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+            break
+
+    # "root#data#locale#ck#epk#HASH" → take last '#' segment
+    if '#' in name:
+        return name.rsplit('#', 1)[-1]
+
+    # "root_data_locale_ck_epk_HASH" → take last '_' segment that looks like a hash
+    if '_' in name and not _HASH_RE.match(name):
+        for part in reversed(name.split('_')):
+            if _HASH_RE.match(part):
+                return part
+
+    return name
 
 
 class EPKError(Exception):
@@ -44,13 +91,13 @@ class EPKError(Exception):
 
 class EPKCrypto:
     """
-    Handles EPK encrypt/decrypt using the bundled main.exe.
+    Handles EPK encrypt/decrypt via the bundled main.exe.
 
-    The main.exe must be present alongside SomeKey.bin in the same directory.
-    On Windows, it's called directly. On other platforms, Wine is tried.
+    main.exe is a Windows binary (compiled from kurikomoe/FSNr_tools).
+    On Linux/macOS it requires Wine.
 
-    For decryption:  epk  → epk_dec  (plaintext locale DAT)
-    For encryption:  epk_dec → epk   (encrypted, ready to deploy)
+    decrypt:  .epk      → .epk_dec  (readable DAT text)
+    encrypt:  .epk_dec  → .epk      (encrypted, deployable)
     """
 
     def __init__(self, main_exe_path: str, some_key_path: str):
@@ -62,244 +109,249 @@ class EPKCrypto:
         if not self.some_key.exists():
             raise FileNotFoundError(f"SomeKey.bin not found: {self.some_key}")
 
-    # ------------------------------------------------------------------
-    # High-level API
-    # ------------------------------------------------------------------
+    # ── Public API ─────────────────────────────────────────────────────
 
-    def decrypt(self, epk_path: Union[str, Path], output_path: Optional[Union[str, Path]] = None) -> Path:
+    def decrypt(
+        self,
+        epk_path: Union[str, Path],
+        output_path: Optional[Union[str, Path]] = None,
+    ) -> Path:
         """
-        Decrypt an EPK file to produce a plain-text .epk_dec.
+        Decrypt an EPK file → .epk_dec plain text.
 
         Args:
-            epk_path: path to encrypted .epk file
-            output_path: where to write the decrypted file (default: same dir, .epk_dec extension)
-
+            epk_path:    path to encrypted .epk (any naming style)
+            output_path: where to write output (default: same dir as input)
         Returns:
-            Path to the decrypted file
+            Path to the decrypted .epk_dec file.
         """
         epk_path = Path(epk_path)
         if not epk_path.exists():
             raise FileNotFoundError(f"EPK not found: {epk_path}")
 
-        result = self._run(epk_path, mode='dec')
-        # main.exe writes <same_path>.epk_dec
-        dec_path = epk_path.with_suffix('.epk_dec')
+        stem = extract_epk_stem(epk_path)
+        log.debug(f"decrypt: {epk_path.name!r} → stem={stem!r}")
+        result = self._run(epk_path, mode='dec', stem=stem)
 
         if output_path:
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(dec_path), str(output_path))
-            return output_path
+            dest = Path(output_path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(result), str(dest))
+            return dest
+        return result
 
-        return dec_path
-
-    def encrypt(self, dec_path: Union[str, Path], output_path: Optional[Union[str, Path]] = None) -> Path:
+    def encrypt(
+        self,
+        dec_path: Union[str, Path],
+        output_path: Optional[Union[str, Path]] = None,
+    ) -> Path:
         """
-        Encrypt a .epk_dec file to produce a deployable .epk.
+        Encrypt a .epk_dec file → deployable .epk.
 
         Args:
-            dec_path: path to decrypted .epk_dec file
-            output_path: where to write the encrypted file (default: same dir, renamed to .epk)
-
+            dec_path:    path to plaintext .epk_dec file
+            output_path: where to write output (default: same dir as input)
         Returns:
-            Path to the encrypted file
+            Path to the encrypted .epk file.
         """
         dec_path = Path(dec_path)
         if not dec_path.exists():
             raise FileNotFoundError(f"EPK_dec not found: {dec_path}")
 
-        result = self._run(dec_path, mode='enc')
-        # main.exe writes <same_path>.epk_enc
-        enc_path = dec_path.with_suffix('.epk_enc')
+        stem = extract_epk_stem(dec_path)
+        log.debug(f"encrypt: {dec_path.name!r} → stem={stem!r}")
+        result = self._run(dec_path, mode='enc', stem=stem)
 
         if output_path:
-            output_path = Path(output_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(enc_path), str(output_path))
-            return output_path
-
-        return enc_path
+            dest = Path(output_path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(result), str(dest))
+            return dest
+        return result
 
     def decrypt_bytes(self, data: bytes, filename_stem: str) -> bytes:
-        """
-        Decrypt EPK data given as bytes.
-        Uses a temp directory to avoid naming conflicts.
-        """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # main.exe derives keystream from filename stem
-            epk_file = Path(tmpdir) / f"{filename_stem}.epk"
-            epk_file.write_bytes(data)
-            dec_file = self.decrypt(epk_file)
-            return dec_file.read_bytes()
+        """Decrypt EPK raw bytes. filename_stem must be the correct 26-char hash."""
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / f"{filename_stem}.epk"
+            src.write_bytes(data)
+            out = self.decrypt(src, Path(td) / f"{filename_stem}.epk_dec")
+            return out.read_bytes()
 
     def encrypt_bytes(self, data: bytes, filename_stem: str) -> bytes:
         """Encrypt plain-text bytes to EPK format."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dec_file = Path(tmpdir) / f"{filename_stem}.epk_dec"
-            dec_file.write_bytes(data)
-            enc_file = self.encrypt(dec_file)
-            return enc_file.read_bytes()
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / f"{filename_stem}.epk_dec"
+            src.write_bytes(data)
+            out = self.encrypt(src, Path(td) / f"{filename_stem}.epk")
+            return out.read_bytes()
 
-    # ------------------------------------------------------------------
-    # Subprocess runner
-    # ------------------------------------------------------------------
+    # ── Core runner ────────────────────────────────────────────────────
 
-    def _run(self, target: Path, mode: str) -> subprocess.CompletedProcess:
-        """Run main.exe in a temp directory where SomeKey.bin is present."""
-        # main.exe reads SomeKey.bin from the same directory as the exe
-        # We symlink/copy main.exe and SomeKey.bin to a work dir,
-        # then call it with the target file path
+    def _run(self, source: Path, mode: str, stem: str) -> Path:
+        """
+        Run main.exe in an isolated temp directory.
 
-        work_dir = target.parent
-
-        # Ensure SomeKey.bin is in the same directory as main.exe
-        # (main.exe looks for SomeKey.bin relative to argv[0])
-        # We copy main.exe + SomeKey.bin to the target's directory temporarily
-        # if they're not already there
-
-        key_in_workdir = work_dir / 'SomeKey.bin'
-        exe_in_workdir = work_dir / 'main.exe'
-
-        _cleanup_exe = False
-        _cleanup_key = False
-
+        Isolation guarantees:
+          - SomeKey.bin is always in the same dir as main.exe (required)
+          - Source file is named exactly "<stem>.epk" or "<stem>.epk_dec"
+            so main.exe gets the correct stem as the crypto key
+          - No interference from other files
+        """
+        tmpdir = Path(tempfile.mkdtemp(prefix='fsn_epk_'))
         try:
-            if not exe_in_workdir.exists() or exe_in_workdir.resolve() != self.main_exe:
-                shutil.copy2(str(self.main_exe), str(exe_in_workdir))
-                _cleanup_exe = True
+            # --- Set up the isolated workspace ---
+            tmp_exe = tmpdir / 'main.exe'
+            tmp_key = tmpdir / 'SomeKey.bin'
+            shutil.copy2(str(self.main_exe), str(tmp_exe))
+            shutil.copy2(str(self.some_key), str(tmp_key))
 
-            if not key_in_workdir.exists() or key_in_workdir.resolve() != self.some_key:
-                shutil.copy2(str(self.some_key), str(key_in_workdir))
-                _cleanup_key = True
+            # Rename source to the CORRECT short name
+            if mode == 'dec':
+                tmp_src  = tmpdir / f"{stem}.epk"
+                tmp_out  = tmpdir / f"{stem}.epk_dec"
+            else:
+                tmp_src  = tmpdir / f"{stem}.epk_dec"
+                tmp_out  = tmpdir / f"{stem}.epk_enc"
 
-            cmd = [str(exe_in_workdir), mode, str(target)]
+            shutil.copy2(str(source), str(tmp_src))
 
-            # On Linux, try Wine
+            # --- Build command ---
+            cmd = [str(tmp_exe), mode, str(tmp_src)]
             if sys.platform != 'win32':
                 wine = shutil.which('wine') or shutil.which('wine64')
-                if wine:
-                    cmd = [wine] + cmd
-                else:
+                if not wine:
                     raise EPKError(
-                        "main.exe requires Windows or Wine. "
-                        "Install Wine (sudo apt install wine) or run on Windows."
+                        "EPK crypto requires Windows or Wine.\n"
+                        "  Linux:  sudo apt install wine\n"
+                        "  macOS:  brew install --cask wine-stable"
                     )
+                cmd = [wine] + cmd
 
-            log.debug(f"Running: {' '.join(cmd)}")
-            result = subprocess.run(
+            log.debug(f"Running: {' '.join(str(c) for c in cmd)}")
+
+            proc = subprocess.run(
                 cmd,
-                cwd=str(work_dir),
+                cwd=str(tmpdir),
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=120,
             )
 
-            if result.returncode != 0:
+            if proc.returncode != 0:
+                msg = (
+                    f"main.exe failed (exit code {proc.returncode}):\n"
+                    f"  stdout: {proc.stdout.strip()}\n"
+                    f"  stderr: {proc.stderr.strip()}\n\n"
+                    f"Troubleshooting:\n"
+                )
+                code = proc.returncode
+                if code == 3221225781:   # 0xC0000135
+                    msg += (
+                        "  0xC0000135 = DLL not found.\n"
+                        "  Windows 7/8: install Visual C++ 2015-2022 Redistributable\n"
+                        "               or Windows Update KB2999226\n"
+                        "  Windows 10+: this should not occur — check main.exe integrity"
+                    )
+                elif code == 3221225477:  # 0xC0000005
+                    msg += "  0xC0000005 = Access violation — likely SomeKey.bin is corrupted"
+                raise EPKError(msg)
+
+            if not tmp_out.exists():
                 raise EPKError(
-                    f"main.exe failed (code {result.returncode}):\n"
-                    f"  stdout: {result.stdout}\n"
-                    f"  stderr: {result.stderr}"
+                    f"main.exe exited OK but output not found: {tmp_out.name}\n"
+                    f"  stdout: {proc.stdout.strip()}"
                 )
 
-            log.debug(f"main.exe output: {result.stdout.strip()}")
-            return result
+            # Move result to output directory (same as original source)
+            dest = source.parent / tmp_out.name
+            shutil.move(str(tmp_out), str(dest))
+            return dest
 
         finally:
-            if _cleanup_exe and exe_in_workdir.exists():
-                exe_in_workdir.unlink(missing_ok=True)
-            if _cleanup_key and key_in_workdir.exists():
-                key_in_workdir.unlink(missing_ok=True)
+            shutil.rmtree(str(tmpdir), ignore_errors=True)
 
+
+# ── EPK text format parser ─────────────────────────────────────────────────
 
 class EPKFile:
     """
-    Represents a decrypted EPK locale data file.
+    Represents a decrypted EPK locale data file (plain UTF-8 text).
 
     Format::
-        DAT\r\n
-        id=qid::label=str::text=lstr::\r\n
-        <id>::<placeholder>::<text>::\r\n
-        ...
+        DAT
+        id=qid::label=str::text=lstr::
+        27244::$$$message_0234_0000_0000$$$::那是有如闪电的枪尖。[lr]::
+        27245::$$$message_0234_0000_0001$$$::迎面刺来的枪尖试图贯穿心脏。[lr]::
 
-    Each text line:  numeric_id :: $$$message_XXXX_XXXX_NNNN$$$ :: actual_text :: [markup]
+    Fields:  id :: $$$placeholder$$$ :: text :: [extra]
+
+    Markup tags to keep when translating:
+        [lr]           — line-break + wait for click
+        [l]            — wait for click only
+        [p]            — page break
+        [r]            — newline
+        [ruby text=""] — ruby annotation (furigana)
     """
 
     HEADER = "DAT\r\nid=qid::label=str::text=lstr::\r\n"
 
     def __init__(self):
-        self.entries: list = []   # list of (id, placeholder, text, extra)
+        self.entries: list = []
 
     @classmethod
     def from_bytes(cls, data: bytes) -> 'EPKFile':
-        """Parse decrypted EPK bytes."""
         obj = cls()
-        text = data.decode('utf-8', errors='replace')
-        lines = text.splitlines()
-
-        for line in lines:
+        for line in data.decode('utf-8', errors='replace').splitlines():
+            line = line.strip()
             if not line or line == 'DAT' or line.startswith('id='):
                 continue
             parts = line.split('::')
             if len(parts) >= 3:
-                entry_id = parts[0].strip()
-                placeholder = parts[1].strip()
-                content = parts[2].strip()
-                extra = parts[3] if len(parts) > 3 else ''
-                obj.entries.append([entry_id, placeholder, content, extra])
-
+                obj.entries.append([
+                    parts[0].strip(),
+                    parts[1].strip(),
+                    parts[2].strip(),
+                    parts[3] if len(parts) > 3 else '',
+                ])
         return obj
 
     def to_bytes(self) -> bytes:
-        """Serialize back to EPK text format."""
         lines = [self.HEADER]
-        for entry_id, placeholder, text, extra in self.entries:
+        for eid, ph, text, extra in self.entries:
             if extra:
-                line = f"{entry_id}::{placeholder}::{text}::{extra}::\r\n"
+                lines.append(f"{eid}::{ph}::{text}::{extra}::\r\n")
             else:
-                line = f"{entry_id}::{placeholder}::{text}::\r\n"
-            lines.append(line)
+                lines.append(f"{eid}::{ph}::{text}::\r\n")
         return ''.join(lines).encode('utf-8')
 
     def get_by_placeholder(self, placeholder: str) -> Optional[list]:
-        for entry in self.entries:
-            if entry[1] == placeholder:
-                return entry
+        for e in self.entries:
+            if e[1] == placeholder:
+                return e
         return None
 
     def get_all_texts(self) -> list:
-        """Return list of (placeholder, text) tuples — the translatable content."""
         return [(e[1], e[2]) for e in self.entries]
 
     def set_text(self, placeholder: str, new_text: str) -> bool:
-        for entry in self.entries:
-            if entry[1] == placeholder:
-                entry[2] = new_text
+        for e in self.entries:
+            if e[1] == placeholder:
+                e[2] = new_text
                 return True
         return False
 
     def replace_all(self, translations: dict) -> int:
-        """
-        Apply a dict of {placeholder: new_text} translations.
-        Returns number of replacements made.
-        """
+        """Apply {placeholder: translation} dict. Returns number of replacements."""
         count = 0
-        for entry in self.entries:
-            if entry[1] in translations:
-                entry[2] = translations[entry[1]]
+        for e in self.entries:
+            val = translations.get(e[1], '')
+            if val:
+                e[2] = val
                 count += 1
         return count
 
     def export_for_translation(self) -> list:
-        """
-        Return a list of dicts suitable for JSON export.
-        Each dict: {id, placeholder, original, translation}
-        """
         return [
-            {
-                'id': e[0],
-                'placeholder': e[1],
-                'original': e[2],
-                'translation': ''
-            }
+            {'id': e[0], 'placeholder': e[1], 'original': e[2], 'translation': ''}
             for e in self.entries
         ]

@@ -1,145 +1,259 @@
 # fsn-tools
 
-All-in-one toolkit for translating **Fate/Stay Night Remastered** (FSN Steam / non-Steam).
+All-in-one toolkit for translating **Fate/Stay Night Remastered** — works with Steam, cracked, and any version.
 
-No external dependencies — pure Python 3.8+ stdlib.  
-Works on Windows natively, and on Linux with Wine for EPK operations.
+Pure Python 3.8+, no external dependencies.
+Runs on Windows natively; Linux/macOS needs Wine for EPK operations.
 
 ---
 
-## What This Does
+## Overview
 
-The game stores all dialogue text in **EPK files** (encrypted KiriKiri locale packages)  
-inside **FPD .bin packages** (encrypted+compressed archives).
+FSN Remastered stores dialogue in **EPK files** (encrypted locale packages) inside **FPD `.bin` archives**.
 
-This toolkit lets you:
-
-1. **Unpack** `.bin` / `.dat` files to get the raw EPK files
-2. **Decrypt** EPK → plain text `DAT` format you can read and edit
-3. **Export** strings to a JSON file for translation
-4. **Import** translated strings back into the EPK
-5. **Encrypt** back to `.epk`
-6. **Deploy** to the game — without touching any original files
+```
+pack00m.bin  (main game pack, 494 MB, 728 scripts)
+patch00m.bin (patch pack, 59 MB, 301 scripts)
+      │
+      ▼  unpack  ← needs decryptKey.bin
+  extracted/  [*.ks scripts + *.epk locale files]
+      │
+      ▼  epk dec  ← needs main.exe + SomeKey.bin
+  HASH.epk_dec   [plain UTF-8 text, editable]
+      │
+      ▼  translate export → edit JSON → translate import
+  HASH_translated.epk_dec
+      │
+      ▼  patch build  ← needs main.exe + SomeKey.bin
+  my_patch/root/data/locale/ck/epk/HASH.epk
+      │
+      ▼  patch deploy  (Steam)
+      or patch launcher  (cracked)
+Game reads translated text ✓
+```
 
 ---
 
 ## Required Key Files
 
-Place these in the `keys/` folder before use.
+Place these three files in the `keys/` folder:
 
 | File | Size | Used for | Where to get |
-|------|------|----------|--------------|
-| `keys/decryptKey.bin` | 65,536 bytes | Unpack FPD `.bin` files | kurikomoe/FSNr_tools repo (`keys/` folder) |
-| `keys/main.exe` | ~1.4 MB | EPK encrypt/decrypt | kurikomoe/FSNr_tools (compile `main.cpp`) |
-| `keys/SomeKey.bin` | 5,120 bytes | EPK crypto | Bundled with main.exe release |
+|------|------|----------|-------------|
+| `keys/decryptKey.bin` | 65 536 B | Unpack FPD `.bin` archives | `kurikomoe/FSNr_tools` repo → `keys/` folder |
+| `keys/main.exe` | ~1.4 MB | EPK decrypt / encrypt | Compile from `kurikomoe/FSNr_tools` (below) |
+| `keys/SomeKey.bin` | 5 120 B | EPK crypto seed | Bundled with the `main.exe` release |
 
-**To compile main.exe yourself (Windows/MinGW):**
+**Compile main.exe (Windows / MinGW):**
 ```bash
 git clone https://github.com/kurikomoe/FSNr_tools
 cd FSNr_tools
 g++ --std=c++20 -O2 main.cpp -o main.exe
-# Copy main.exe and keys/SomeKey.bin to fsn-tools/keys/
+# copy main.exe AND keys/SomeKey.bin into fsn-tools/keys/
 ```
 
-**On Linux** — install Wine for EPK operations:
+**Linux — install Wine:**
+```bash
+sudo apt install wine    # Debian/Ubuntu
+sudo pacman -S wine      # Arch
+```
+
+Run `python fsn-tools.py --key-info` for detailed instructions on each file.
+
+---
+
+## Quick Start
+
+```bash
+# Show what is inside a pack file
+python fsn-tools.py info fpd pack00m.bin --key keys/decryptKey.bin
+
+# Extract everything from the game's obb/pack/ folder
+python fsn-tools.py unpack auto obb/pack/ \
+    --key keys/decryptKey.bin \
+    --out ./extracted/
+
+# List all EPK files with human-readable script names
+python fsn-tools.py epk list extracted/pack00m.bin/
+
+# Decrypt an EPK for a specific scene
+python fsn-tools.py patch extract-epk pack00m.bin "プロローグ1日目" \
+    --key keys/decryptKey.bin \
+    --main-exe keys/main.exe \
+    --some-key keys/SomeKey.bin \
+    --out ./work/
+
+# Export to JSON for translation
+python fsn-tools.py translate export work/*.epk_dec \
+    --out translations/batch1.json
+
+# --- edit translations/batch1.json, fill "translation" fields ---
+
+# Import translations back
+python fsn-tools.py translate import translations/batch1.json \
+    --out work/translated/
+
+# Check progress
+python fsn-tools.py translate status translations/batch1.json
+
+# Build patch
+python fsn-tools.py patch build work/translated/ \
+    --main-exe keys/main.exe \
+    --some-key keys/SomeKey.bin \
+    --out my_patch/
+
+# Deploy — Steam / installed version (no game files modified)
+python fsn-tools.py patch deploy my_patch/
+
+# Deploy — cracked / portable version
+python fsn-tools.py patch launcher my_patch/ \
+    --game-exe "C:\Games\Fate\fsn2-win64vc14-release.exe"
+```
+
+---
+
+## Command Reference
+
+```
+fsn-tools.py  [--verbose]  [--key-info]
+
+  unpack
+    fpd   <file.bin> [file.bin ...]  --key <decryptKey.bin>  --out <dir>
+    dat   <pack_dir>                                          --out <dir>
+    auto  <pack_dir>                 --key <decryptKey.bin>  --out <dir>
+
+  epk
+    dec   <file.epk> [...]  --main-exe <exe>  --some-key <key>  [--out <dir>]
+    enc   <file.epk_dec> [...]  --main-exe <exe>  --some-key <key>  [--out <dir>]
+    info  <file.epk_dec> [...]
+    list  <directory>
+
+  translate
+    export  <file.epk_dec> [...]  --out <out.json>
+    import  <translations.json>   --out <dir>
+    status  <translations.json>
+
+  patch
+    build        <translated_dir>  --main-exe <exe>  --some-key <key>  --out <patch_dir>
+    deploy       <patch_dir>       [--localappdata <path>]  [--dry-run]
+    launcher     <patch_dir>       --game-exe <path/to/exe>
+    extract-epk  <file.bin>  <"script name">  --key <decryptKey.bin>
+                                              --main-exe <exe>  --some-key <key>
+                                              --out <dir>
+
+  info
+    fpd   <file.bin>  --key <decryptKey.bin>  [--type epk|ks|png]  [-v]
+    epk   [--route saber|rin|sakura|prologue]
+    hash  <"script name"> [...]
+```
+
+Default paths for `--main-exe` and `--some-key` are `keys/main.exe` and `keys/SomeKey.bin`.
+
+---
+
+## Troubleshooting
+
+### `main.exe failed (code 3221225781)`
+
+**0xC0000135** is the Windows "DLL not found" status code.
+It has two causes in this context:
+
+**Cause A — Wrong filename stem (now fixed in this toolkit)**
+
+When FPD extracts an EPK, the file is named with the full path using `#` as separator:
+```
+root#data#locale#ck#epk#HASH.epk
+```
+`main.exe` reads the stem from `argv[1]` to derive the crypto key.
+If it receives the full name, the stem becomes `root#data#locale#ck#epk#HASH` (46 chars)
+instead of just `HASH` (26 chars). Wrong stem → wrong keystream → crash.
+
+This toolkit now renames the file to `HASH.epk` in an isolated temp directory
+before calling `main.exe`, so this error no longer occurs.
+
+If you call `main.exe` manually, always rename the file first:
+```
+# WRONG
+main.exe dec root#data#locale#ck#epk#HASH.epk
+
+# CORRECT
+copy root#data#locale#ck#epk#HASH.epk HASH.epk
+main.exe dec HASH.epk
+```
+
+**Cause B — Missing Visual C++ runtime (Windows 7 / 8.1 only)**
+
+Windows 10+ already includes the required runtime. For older Windows:
+- Install [Visual C++ 2015–2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+- Or Windows Update KB2999226
+
+**Cause C — Wine not installed (Linux)**
+
 ```bash
 sudo apt install wine
 ```
 
-Run `python fsn-tools.py --key-info` for full details.
+---
+
+## Game File Structure
+
+```
+obb/pack/
+├── fileinfo_*.txt         ← index files for .dat containers
+├── *.dat                  ← raw asset containers (images, video, etc.)
+├── pack00m.bin            ← MAIN FPD pack: 6805 entries (728 KS + 2188 EPK + assets)
+├── patch00m.bin           ← Patch FPD: 628 entries (subset)
+├── patch00d.bin           ← Patch FPD: UI graphics only
+└── movie.dat              ← OP movie files
+```
+
+### EPK locale groups inside pack00m.bin
+
+| Path | Count | Purpose |
+|------|-------|---------|
+| `root/data/locale/ck/epk/` | 727 | **Chinese strings — main translation target** |
+| `root/data/locale/us/epk/` | 727 | English strings (UI + some scenes) |
+| `root/data/epk/` | 734 | Base/fallback copies + special EPKs |
+
+Special named EPKs (not script-specific):
+
+| Name | Contents |
+|------|----------|
+| `uistring` | Menu labels, buttons, system text |
+| `statictext` | Title screen, chapter names |
+| `uiconst` | UI constants |
+| `timeline_text` | Flowchart / timeline labels |
+| `weapon_data` | Noble Phantasm descriptions |
+| `servant_data` | Servant profile text |
+| `correct_data` | Choice / answer data |
+| `bgm_flag` | BGM track names |
 
 ---
 
-## Installation
+## EPK Text Format
 
-```bash
-git clone <this-repo>
-cd fsn-tools
-# Python 3.8+ required, no pip install needed
-python fsn-tools.py --help
-```
-
----
-
-## Directory Structure
+After decryption, EPK files are plain UTF-8 text:
 
 ```
-fsn-tools/
-├── fsn-tools.py            ← main entry point (run this)
-├── keys/
-│   ├── decryptKey.bin      ← FPD XOR key  (65536 bytes)
-│   ├── main.exe            ← EPK crypto binary
-│   └── SomeKey.bin         ← EPK crypto key  (5120 bytes)
-├── core/
-│   ├── fpd.py              ← FPD .bin parser/extractor
-│   ├── epk.py              ← EPK decrypt/encrypt wrapper
-│   ├── epk_names.py        ← KS name ↔ EPK hash resolver
-│   ├── dat_pack.py         ← DAT pack extractor (fileinfo_*.txt)
-│   └── patch_builder.py    ← Patch build/deploy logic
-├── data/
-│   └── ks_names.py         ← All 301 KS script names (embedded)
-└── tools/
-    ├── cmd_unpack.py
-    ├── cmd_epk.py
-    ├── cmd_translate.py
-    ├── cmd_patch.py
-    └── cmd_info.py
+DAT
+id=qid::label=str::text=lstr::
+27244::$$$message_0234_0000_0000$$$::那是有如闪电的枪尖。[lr]::
+27245::$$$message_0234_0000_0001$$$::迎面刺来的枪尖试图贯穿心脏。[lr]::
 ```
 
----
+Fields: `id :: $$$placeholder$$$ :: text :: [extra markup]`
 
-## Complete Workflow
+**Markup tags — preserve these when translating:**
 
-### Step 1 — Unpack the game
+| Tag | Meaning |
+|-----|---------|
+| `[lr]` | Line break + wait for click |
+| `[l]` | Wait for click |
+| `[p]` | Page break |
+| `[r]` | Newline |
+| `[ruby text="X"]` | Furigana / ruby annotation |
 
-```bash
-# Extract everything from the game's obb/pack/ folder
-python fsn-tools.py unpack auto "C:\Games\Fate\obb\pack\" \
-    --key keys/decryptKey.bin \
-    --out ./extracted/
-```
-
-This produces:
-- `extracted/patch00m.bin/` — contains `.ks` scripts + `.epk` locale files
-- `extracted/patch00d.bin/` — contains UI assets
-
-### Step 2 — Inspect what's there
-
-```bash
-# List all EPK files with their script names
-python fsn-tools.py epk list extracted/patch00m.bin/
-
-# Show full FPD contents
-python fsn-tools.py info fpd extracted/patch00m.bin --key keys/decryptKey.bin --type epk
-```
-
-### Step 3 — Decrypt an EPK (or all of them)
-
-```bash
-# Decrypt a single EPK (prologue day 1)
-python fsn-tools.py epk dec \
-    --main-exe keys/main.exe \
-    --some-key keys/SomeKey.bin \
-    extracted/patch00m.bin/root#data#epk#1jftmqc2rr04kclvl0ql71s2ef.epk \
-    --out ./work/
-
-# Or one-step: extract + decrypt by script name
-python fsn-tools.py patch extract-epk \
-    extracted/patch00m.bin/../patch00m.bin \
-    "プロローグ1日目" \
-    --key keys/decryptKey.bin \
-    --main-exe keys/main.exe \
-    --some-key keys/SomeKey.bin \
-    --out ./work/
-```
-
-### Step 4 — Export for translation
-
-```bash
-python fsn-tools.py translate export work/*.epk_dec --out translations/batch1.json
-```
-
-The JSON looks like:
+**Translation JSON format:**
 ```json
 [
   {
@@ -150,138 +264,92 @@ The JSON looks like:
         "id": "27244",
         "placeholder": "$$$message_0234_0000_0000$$$",
         "original": "那是有如闪电的枪尖。[lr]",
-        "translation": ""
+        "translation": "It was a spear tip like a bolt of lightning.[lr]"
       }
     ]
   }
 ]
 ```
 
-### Step 5 — Translate
-
-Edit `translations/batch1.json` and fill in the `"translation"` fields.
-Keep markup tags like `[lr]`, `[l]`, `[p]`, `[r]` intact.
-
-### Step 6 — Import translations back
-
-```bash
-python fsn-tools.py translate import translations/batch1.json --out work/translated/
-```
-
-Check progress:
-```bash
-python fsn-tools.py translate status translations/batch1.json
-```
-
-### Step 7 — Build the patch
-
-```bash
-python fsn-tools.py patch build work/translated/ \
-    --main-exe keys/main.exe \
-    --some-key keys/SomeKey.bin \
-    --out ./my_patch/
-```
-
-### Step 8 — Deploy
-
-**Steam / installed version** (no game file modification):
-```bash
-python fsn-tools.py patch deploy my_patch/
-```
-> Copies to `%LOCALAPPDATA%\typemoon\fsn2\data\`. Game reads translated EPKs automatically.
-
-**Cracked / non-Steam version:**
-```bash
-python fsn-tools.py patch launcher my_patch/ \
-    --game-exe "C:\Games\Fate\fsn2-win64vc14-release.exe"
-```
-> Creates `my_patch/launch_with_patch.bat` — double-click to launch with patch.  
-> `LOCALAPPDATA` is redirected so the game finds your translations without modifying anything.
+Leave `"translation"` empty to keep the original text unchanged.
 
 ---
 
-## EPK File Format Reference
-
-After decryption, EPK files are plain UTF-8 text:
+## FPD Binary Format Reference
 
 ```
-DAT\r\n
-id=qid::label=str::text=lstr::\r\n
-27244::$$$message_0234_0000_0000$$$::那是有如闪电的枪尖。[lr]::\r\n
-27245::$$$message_0234_0000_0001$$$::迎面刺来的枪尖试图贯穿心脏。[lr]::\r\n
-```
+Offset  Size  Type      Field
+──────  ────  ────────  ────────────────────────────────
+0x00    4     char[4]   Magic: "FPD\x00"
+0x04    4     u32 BE    Version (= 2)
+0x08    8     u64 BE    Entry count
+0x10    8     u64 BE    Entry block total size (includes 56-byte header)
+0x18    32    —         Reserved
 
-Fields: `ID :: placeholder_tag :: text_content :: [markup]`
+Entry block (XOR-decrypted with decryptKey.bin):
+  Each entry = 32 bytes:
+  +0x00  u64 BE  filepath string offset (into string table)
+  +0x08  u64 BE  data offset (from start of data section)
+  +0x10  u64 BE  stored size (compressed)
+  +0x18  u64 BE  uncompressed size (0 = data is NOT compressed)
 
-Placeholder tags follow the pattern: `$$$message_SCENE_BLOCK_LINE$$$`
+String table (zlib-compressed, follows the entries):
+  Null-terminated UTF-8 strings
 
-### Markup tags to preserve
-
-| Tag | Meaning |
-|-----|---------|
-| `[lr]` | Line break + wait for click |
-| `[l]` | Wait for click |
-| `[p]` | Page break |
-| `[r]` | Newline only |
-| `[ruby text="..."]` | Ruby/furigana |
-
----
-
-## FPD .bin Format Reference
-
-```
-Magic:   FPD\x00  (4 bytes)
-Version: uint32 big-endian  (= 2)
-Entries: uint64 big-endian  (file count)
-BlkSize: uint64 big-endian  (entry block size including 56-byte header)
-Padding: 32 bytes
---- Entry block (XOR'd with decryptKey.bin, 32 bytes per entry) ---
-  filepath_str_offset: uint64 BE
-  data_offset:         uint64 BE
-  data_size:           uint64 BE  (compressed)
-  uncompressed_size:   uint64 BE  (0 = not compressed)
---- String table (zlib compressed, follows entries) ---
-  null-terminated UTF-8 strings
---- Data section ---
-  XOR'd (and optionally zlib-compressed) file data
+Data section (follows the entry block):
+  Per-entry: XOR with decryptKey.bin, then optionally zlib-decompress
 ```
 
 ---
 
 ## EPK Hash Algorithm
 
-KS script names are hashed to produce EPK filenames:
+KiriKiri script names hash to their EPK filename:
 
 ```python
 import hashlib, string
+
 _ALPHABET = string.digits + string.ascii_lowercase
 
 def ks_to_epk_hash(name: str) -> str:
     digest = hashlib.md5(name.encode('utf-8')).digest()
-    bits = int.from_bytes(digest, 'big')
+    bits   = int.from_bytes(digest, 'big')
     result = ''
     for i in range(3, 3 + 128, 5):
         result += _ALPHABET[(bits << i >> 128) & 0x1F]
     return result
 
 # "プロローグ1日目" → "1jftmqc2rr04kclvl0ql71s2ef"
+# "セイバーエピローグ" → "46hemeh77jjsiv82vkljdobkr7"
 ```
 
-Algorithm credit: @tea (from kurikomoe/FSNr_tools).
+Algorithm credit: @tea (kurikomoe/FSNr_tools).
+
+---
+
+## Deploy Without Modifying Game Files
+
+The game reads override data from:
+```
+%LOCALAPPDATA%\typemoon\fsn2\data\
+```
+
+Put your patched EPK files there with the same directory structure:
+```
+%LOCALAPPDATA%\typemoon\fsn2\data\root\data\locale\ck\epk\HASH.epk
+```
+
+`patch deploy` does this automatically.
+
+For cracked / portable installs, `patch launcher` creates a batch file that
+sets `%LOCALAPPDATA%` to a subfolder of your patch before launching the game.
+The original game files are **never touched**.
 
 ---
 
 ## Credits
 
-- **kurikomoe/FSNr_tools** — EPK crypto binary (`main.exe`), key files, EPK hash algorithm
+- **kurikomoe/FSNr_tools** — EPK crypto (`main.exe`, `SomeKey.bin`), unpack scripts, bonus redirect technique
 - **DaZombieKiller/FatePackageManager** — FPD format documentation
-- **@tea** — EPK filename hashing algorithm
-
----
-
-## Notes
-
-- The `keys/` folder is gitignored — never commit `decryptKey.bin`, `SomeKey.bin`, or `main.exe`
-- EPK names in the game use the `root/data/locale/ck/epk/` path for the Chinese locale strings  
-  (used as the main string store regardless of display language)
-- The game's `obb/pack/` folder naming is a leftover from the Android/mobile port — it's PC/Steam
+- **Jannabie/FSN_Decompiler** — KS script format reference
+- **@tea** — EPK filename hash algorithm
