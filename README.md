@@ -35,8 +35,8 @@ Berjalan native di Windows. Linux/macOS membutuhkan Wine untuk operasi EPK.
 FSN Remastered menyimpan dialog dalam file **EPK** (encrypted locale packages) yang ada di dalam arsip **FPD `.bin`**.
 
 ```
-pack00m.bin  (pack utama game, 494 MB, 728 skrip)
-patch00m.bin (pack patch, 59 MB, 301 skrip)
+obb/pack00m.bin  (pack utama game, 494 MB, 728 skrip)
+obb/patch00m.bin (pack patch, 59 MB, 301 skrip)
       │
       ▼  unpack  ← butuh decryptKey.bin
   extracted/  [*.ks scripts + *.epk locale files]
@@ -101,20 +101,28 @@ Berikut adalah alur lengkap dari nol hingga patch berjalan di dalam game.
 
 ### Langkah 1 — Ekstrak Pack Game
 
-Ekstrak semua file dari folder `obb/pack/` game ke direktori kerja lokal.
+Ekstrak file `.bin` dari folder `/obb/` (skrip & dialog) ke direktori kerja lokal.
 
 ```bash
-python fsn-tools.py unpack auto obb/pack/ \
+# Ekstrak semua .bin dari folder /obb sekaligus
+python fsn-tools.py unpack auto obb/ \
     --key keys/decryptKey.bin \
     --out ./extracted/
 ```
 
 Hasilnya adalah folder `extracted/` yang berisi subfolder per file `.bin`, masing-masing berisi skrip `.ks` dan file `.epk`.
 
-Untuk melihat isi sebuah pack tanpa mengekstraknya:
+Jika ingin mengekstrak aset UI gambar dari folder `/pack/` (file WebP):
 
 ```bash
-python fsn-tools.py info fpd pack00m.bin --key keys/decryptKey.bin
+python fsn-tools.py unpack dat pack/ \
+    --out ./extracted_ui/
+```
+
+Untuk melihat isi sebuah `.bin` tanpa mengekstraknya:
+
+```bash
+python fsn-tools.py info fpd obb/pack00m.bin --key keys/decryptKey.bin
 ```
 
 Untuk melihat daftar semua file EPK beserta nama skrip yang terbaca manusia:
@@ -411,15 +419,64 @@ Field: `id :: $$$placeholder$$$ :: text :: [markup tambahan]`
 
 ## Struktur File Game
 
+Aset game tersebar di **dua folder terpisah** dengan fungsi yang berbeda:
+
 ```
-obb/pack/
-├── fileinfo_*.txt         ← file indeks untuk container .dat
-├── *.dat                  ← container aset mentah (gambar, video, dll.)
-├── pack00m.bin            ← FPD pack UTAMA: 6805 entri (728 KS + 2188 EPK + aset)
-├── patch00m.bin           ← FPD patch: 628 entri (subset)
-├── patch00d.bin           ← FPD patch: grafis UI saja
-└── movie.dat              ← file OP movie
+[root instalasi game]/
+├── obb/          ← skrip dialog, suara, UI (dalam .bin terenkripsi)
+└── pack/         ← aset UI gambar (dalam .dat, bisa dibuka via fileinfo)
 ```
+
+---
+
+### Folder `/obb/` — Skrip, Suara, dan UI Terenkripsi
+
+Folder ini adalah yang **paling krusial** untuk keperluan translasi maupun modding konten.  
+Berisi file `.bin` berformat FPD yang menyimpan skrip dialog, file EPK, aset suara, dan grafis UI tertentu.
+
+```
+obb/
+├── pack00m.bin      ← FPD pack UTAMA: 6805 entri
+│                        728 skrip .ks (dialog & logika game)
+│                        2188 file .epk (teks dialog terenkripsi)
+│                        aset grafis & audio tambahan
+├── patch00m.bin     ← FPD patch / update: 628 entri (subset dari pack00m)
+├── patch00d.bin     ← FPD patch khusus grafis UI
+└── movie.dat        ← file OP movie
+```
+
+**Yang bisa kamu modifikasi dari `/obb/`:**
+
+| Target | File Sumber | Cara Akses |
+|--------|-------------|------------|
+| Dialog / teks cerita | `pack00m.bin` atau `patch00m.bin` | `unpack` → `epk dec` → edit → `patch build` |
+| Teks UI (menu, tombol) | `pack00m.bin` (EPK `uistring`, `statictext`) | sama seperti di atas |
+| File suara | `pack00m.bin` atau `patch00m.bin` | `unpack` → ekstrak manual |
+
+---
+
+### Folder `/pack/` — Aset Grafis UI (WebP)
+
+Folder ini berisi container `.dat` yang menyimpan gambar-gambar antarmuka game dalam format **WebP** — seperti tombol, background menu, ilustrasi UI, dan lain-lain.
+
+```
+pack/
+├── fileinfo_*.txt   ← file indeks: berisi daftar nama file & offset di dalam .dat
+└── *.dat            ← container aset gambar (WebP, PNG, dll.)
+```
+
+File `fileinfo_*.txt` berfungsi sebagai **peta** untuk membaca isi `.dat` — tanpa file ini kamu tidak bisa tahu file apa yang ada di dalam setiap `.dat`. Buka dengan editor teks biasa untuk melihat daftarnya.
+
+**Yang bisa kamu modifikasi dari `/pack/`:**
+
+| Target | File Sumber | Cara Akses |
+|--------|-------------|------------|
+| Gambar UI / tombol / background menu | `*.dat` | Baca `fileinfo_*.txt` untuk tahu offset, lalu ekstrak manual |
+| Aset WebP (bisa diedit di Photoshop/GIMP) | di dalam `.dat` | Ekstrak → edit → pack ulang |
+
+> **Tip:** Gunakan `python fsn-tools.py unpack dat <pack_dir> --out <dir>` untuk mengekstrak isi container `.dat` dari folder `/pack/`.
+
+---
 
 ### Grup locale EPK di dalam pack00m.bin
 
