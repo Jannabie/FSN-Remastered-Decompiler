@@ -351,5 +351,4 @@ The original game files are **never touched**.
 
 - **kurikomoe/FSNr_tools** — EPK crypto (`main.exe`, `SomeKey.bin`), unpack scripts, bonus redirect technique
 - **DaZombieKiller/FatePackageManager** — FPD format documentation
-- **Jannabie/FSN_Decompiler** — KS script format reference
 - **@tea** — EPK filename hash algorithm
