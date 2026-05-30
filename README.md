@@ -1,48 +1,33 @@
 # fsn-tools — Panduan Terjemahan Fate/Stay Night Remastered
 
-Toolkit all-in-one untuk mentranslasi **Fate/Stay Night Remastered** (versi Steam maupun crack).
+Toolkit all-in-one buat translasi **Fate/Stay Night Remastered** (Steam maupun crack).
 
-Pure Python 3.8+, tanpa dependensi eksternal.  
-Berjalan native di Windows. Linux/macOS membutuhkan Wine untuk operasi EPK.
+Pure Python 3.8+, tanpa dependensi eksternal. Native di Windows — Linux/macOS butuh Wine untuk operasi EPK.
 
 ---
 
-## Daftar Isi
+## Proof of Concept
 
-- [Gambaran Umum](#gambaran-umum)
-- [Persyaratan](#persyaratan)
-- [File Key yang Dibutuhkan](#file-key-yang-dibutuhkan)
-- [Alur Kerja Lengkap](#alur-kerja-lengkap)
-  - [Langkah 1 — Ekstrak Pack Game](#langkah-1--ekstrak-pack-game)
-  - [Langkah 2 — Dekripsi File EPK Satu Adegan](#langkah-2--dekripsi-file-epk-satu-adegan)
-  - [Langkah 3 — Export ke JSON untuk Ditranslasi](#langkah-3--export-ke-json-untuk-ditranslasi)
-  - [Langkah 4 — Edit Terjemahan](#langkah-4--edit-terjemahan)
-  - [Langkah 5 — Import Terjemahan Kembali](#langkah-5--import-terjemahan-kembali)
-  - [Langkah 6 — Build Patch](#langkah-6--build-patch)
-  - [Langkah 7 — Deploy Patch ke Game](#langkah-7--deploy-patch-ke-game)
-- [Memilih Bahasa Target: `ck` vs `us`](#memilih-bahasa-target-ck-vs-us)
-- [Bukti Keberhasilan](#bukti-keberhasilan)
-- [Referensi Command Lengkap](#referensi-command-lengkap)
-- [Format Teks EPK](#format-teks-epk)
-- [Struktur File Game](#struktur-file-game)
-- [Troubleshooting](#troubleshooting)
-- [Kredit](#kredit)
+| Screenshot |
+|:---:|
+| ![Bukti script berhasil diubah](https://i.imgur.com/q9K7bpr.png) |
+| *Teks in-game berhasil diubah via patch build + deploy* |
 
 ---
 
 ## Gambaran Umum
 
-FSN Remastered menyimpan dialog dalam file **EPK** (encrypted locale packages) yang ada di dalam arsip **FPD `.bin`**.
+FSN Remastered nyimpen dialog di file **EPK** (encrypted locale packages) yang dibundel dalam arsip **FPD `.bin`**.
 
 ```
-obb/pack00m.bin  (pack utama game, 494 MB, 728 skrip)
+obb/pack00m.bin  (pack utama, 494 MB, 728 skrip)
 obb/patch00m.bin (pack patch, 59 MB, 301 skrip)
       │
       ▼  unpack  ← butuh decryptKey.bin
   extracted/  [*.ks scripts + *.epk locale files]
       │
       ▼  epk dec  ← butuh main.exe + SomeKey.bin
-  HASH.epk_dec   [teks UTF-8 biasa, bisa diedit]
+  HASH.epk_dec   [teks UTF-8 biasa, bisa langsung diedit]
       │
       ▼  translate export → edit JSON → translate import
   HASH_translated.epk_dec
@@ -57,38 +42,35 @@ Game membaca teks hasil terjemahan ✓
 
 ---
 
-## Persyaratan
+## Requirements
 
-- Python 3.8 atau lebih baru
-- Windows (native) **atau** Linux/macOS dengan Wine terinstal
-- Tiga file key (lihat bagian berikutnya)
+- Python 3.8+
+- Windows (native) **atau** Linux/macOS dengan Wine
 
 **Install Wine (Linux):**
-
 ```bash
-sudo apt install wine       # Debian / Ubuntu
-sudo pacman -S wine         # Arch Linux
+sudo apt install wine       # Debian/Ubuntu
+sudo pacman -S wine         # Arch
 ```
 
 ---
 
 ## File Key yang Dibutuhkan
 
-Letakkan ketiga file ini di dalam folder `keys/`:
+Taruh ketiga file ini di folder `keys/`:
 
-| File | Ukuran | Kegunaan | Cara Mendapatkan |
-|------|--------|----------|-----------------|
+| File | Ukuran | Kegunaan | Cara Dapat |
+|------|--------|----------|------------|
 | `keys/decryptKey.bin` | 65.536 B | Unpack arsip FPD `.bin` | Repo `kurikomoe/FSNr_tools` → folder `keys/` |
-| `keys/main.exe` | ~1,4 MB | Dekripsi / enkripsi EPK | Compile dari `kurikomoe/FSNr_tools` (lihat di bawah) |
-| `keys/SomeKey.bin` | 5.120 B | Seed kriptografi EPK | Dibundel bersama rilis `main.exe` |
+| `keys/main.exe` | ~1,4 MB | Dekripsi/enkripsi EPK | Compile dari `kurikomoe/FSNr_tools` |
+| `keys/SomeKey.bin` | 5.120 B | Seed kriptografi EPK | Dibundel bareng rilis `main.exe` |
 
-**Compile main.exe (Windows / MinGW):**
-
+**Compile main.exe (Windows/MinGW):**
 ```bash
 git clone https://github.com/kurikomoe/FSNr_tools
 cd FSNr_tools
 g++ --std=c++20 -O2 main.cpp -o main.exe
-# salin main.exe DAN keys/SomeKey.bin ke dalam folder fsn-tools/keys/
+# salin main.exe DAN keys/SomeKey.bin ke fsn-tools/keys/
 ```
 
 Jalankan `python fsn-tools.py --key-info` untuk instruksi detail tiap file.
@@ -97,11 +79,7 @@ Jalankan `python fsn-tools.py --key-info` untuk instruksi detail tiap file.
 
 ## Alur Kerja Lengkap
 
-Berikut adalah alur lengkap dari nol hingga patch berjalan di dalam game.
-
 ### Langkah 1 — Ekstrak Pack Game
-
-Ekstrak file `.bin` dari folder `/obb/` (skrip & dialog) ke direktori kerja lokal.
 
 ```bash
 # Ekstrak semua .bin dari folder /obb sekaligus
@@ -110,32 +88,24 @@ python fsn-tools.py unpack auto obb/ \
     --out ./extracted/
 ```
 
-Hasilnya adalah folder `extracted/` yang berisi subfolder per file `.bin`, masing-masing berisi skrip `.ks` dan file `.epk`.
-
-Jika ingin mengekstrak aset UI gambar dari folder `/pack/` (file WebP):
+Hasilnya folder `extracted/` berisi subfolder per file `.bin`, masing-masing ada skrip `.ks` dan file `.epk`.
 
 ```bash
-python fsn-tools.py unpack dat pack/ \
-    --out ./extracted_ui/
-```
+# Kalau mau ekstrak aset UI gambar dari /pack/ (WebP)
+python fsn-tools.py unpack dat pack/ --out ./extracted_ui/
 
-Untuk melihat isi sebuah `.bin` tanpa mengekstraknya:
-
-```bash
+# Lihat isi .bin tanpa ekstrak
 python fsn-tools.py info fpd obb/pack00m.bin --key keys/decryptKey.bin
-```
 
-Untuk melihat daftar semua file EPK beserta nama skrip yang terbaca manusia:
-
-```bash
+# Lihat daftar semua EPK + nama skripnya
 python fsn-tools.py epk list extracted/pack00m.bin/
 ```
 
 ---
 
-### Langkah 2 — Dekripsi File EPK Satu Adegan
+### Langkah 2 — Dekripsi EPK Satu Adegan
 
-Gunakan nama skrip KiriKiri (dalam huruf Jepang) untuk mengekstrak dan langsung mendekripsi EPK dari adegan yang ingin ditranslasi.
+Pakai nama skrip KiriKiri (huruf Jepang) buat ekstrak dan langsung dekripsi EPK adegan yang mau ditranslasi:
 
 ```bash
 python fsn-tools.py patch extract-epk pack00m.bin "プロローグ1日目" \
@@ -145,10 +115,9 @@ python fsn-tools.py patch extract-epk pack00m.bin "プロローグ1日目" \
     --out ./work/
 ```
 
-> **Tip:** Gunakan `python fsn-tools.py info epk --route prologue` (atau `saber`, `rin`, `sakura`) untuk melihat daftar nama skrip per rute.
+> **Tip:** `python fsn-tools.py info epk --route prologue` (atau `saber`, `rin`, `sakura`) buat lihat daftar nama skrip per rute.
 
-Jika ingin mendekripsi file `.epk` secara langsung (tanpa extract dari pack):
-
+Kalau mau dekripsi file `.epk` langsung (tanpa extract dari pack):
 ```bash
 python fsn-tools.py epk dec \
     extracted/pack00m.bin/root#data#locale#ck#epk#1jftmqc2rr04kclvl0ql71s2ef.epk \
@@ -157,31 +126,23 @@ python fsn-tools.py epk dec \
     --out ./work/
 ```
 
-Hasilnya adalah file `HASH.epk_dec` — teks UTF-8 biasa yang langsung bisa dibuka dengan editor teks apapun.
+Hasilnya file `HASH.epk_dec` — teks UTF-8 biasa, bisa dibuka editor teks apapun.
 
 ---
 
-### Langkah 3 — Export ke JSON untuk Ditranslasi
-
-Konversi file `.epk_dec` ke format JSON agar mudah diedit.
+### Langkah 3 — Export ke JSON
 
 ```bash
 python fsn-tools.py translate export work/*.epk_dec \
     --out translations/batch1.json
-```
 
-Untuk beberapa file sekaligus:
-
-```bash
+# Beberapa file sekaligus
 python fsn-tools.py translate export \
     work/1jftmqc2rr04kclvl0ql71s2ef.epk_dec \
     work/46hemeh77jjsiv82vkljdobkr7.epk_dec \
     --out translations/batch_prologue.json
-```
 
-Cek progress terjemahan:
-
-```bash
+# Cek progress
 python fsn-tools.py translate status translations/batch1.json
 ```
 
@@ -189,7 +150,7 @@ python fsn-tools.py translate status translations/batch1.json
 
 ### Langkah 4 — Edit Terjemahan
 
-Buka file JSON dengan editor teks (VS Code, Notepad++, dll). Isi kolom `"translation"` pada setiap entri:
+Buka JSON, isi field `"translation"` — jangan ubah yang lain:
 
 ```json
 [
@@ -202,39 +163,28 @@ Buka file JSON dengan editor teks (VS Code, Notepad++, dll). Isi kolom `"transla
         "placeholder": "$$$message_0234_0000_0000$$$",
         "original": "那是有如闪电的枪尖。[lr]",
         "translation": "Itu adalah ujung tombak secepat kilat.[lr]"
-      },
-      {
-        "id": "27245",
-        "placeholder": "$$$message_0234_0000_0001$$$",
-        "original": "迎面刺来的枪尖试图贯穿心脏。[lr]",
-        "translation": "Ujung tombak itu melesat ke arahku, hendak menembus jantungku.[lr]"
       }
     ]
   }
 ]
 ```
 
-> **Penting:** Pertahankan tag markup seperti `[lr]`, `[l]`, `[p]`, `[r]`, dan `[ruby text="X"]`.  
-> Biarkan `"translation"` kosong (`""`) jika ingin teks tetap menggunakan bahasa aslinya.
+> ⚠️ Pertahankan tag markup seperti `[lr]`, `[l]`, `[p]`, `[r]`, `[ruby text="X"]`. Biarkan `"translation"` kosong kalau mau tetap pakai teks asli.
 
 ---
 
-### Langkah 5 — Import Terjemahan Kembali
-
-Setelah selesai mengisi terjemahan, import kembali ke format `.epk_dec`:
+### Langkah 5 — Import Terjemahan
 
 ```bash
 python fsn-tools.py translate import translations/batch1.json \
     --out work/translated/
 ```
 
-Hasilnya adalah file `HASH_translated.epk_dec` di dalam folder `work/translated/`.
+Hasilnya file `HASH_translated.epk_dec` di `work/translated/`.
 
 ---
 
 ### Langkah 6 — Build Patch
-
-Enkripsi kembali file `.epk_dec` yang sudah ditranslasi dan susun ke dalam struktur direktori patch yang siap pakai.
 
 ```bash
 python fsn-tools.py patch build ./work/translated/ \
@@ -243,45 +193,32 @@ python fsn-tools.py patch build ./work/translated/ \
     --out ./my_patch/
 ```
 
-Hasilnya adalah folder `my_patch/` dengan struktur seperti ini:
-
+Hasilnya folder `my_patch/` dengan struktur:
 ```
 my_patch/
-└── root/
-    └── data/
-        └── locale/
-            └── ck/          ← folder bahasa target (lihat bagian selanjutnya)
-                └── epk/
-                    └── 1jftmqc2rr04kclvl0ql71s2ef.epk
+└── root/data/locale/
+    └── ck/epk/
+        └── 1jftmqc2rr04kclvl0ql71s2ef.epk
 ```
 
 ---
 
-### Langkah 7 — Deploy Patch ke Game
+### Langkah 7 — Deploy ke Game
 
-**Versi Steam (direkomendasikan):**
-
+**Steam:**
 ```bash
 python fsn-tools.py patch deploy ./my_patch/
 ```
+File disalin ke `%LOCALAPPDATA%\typemoon\fsn2\data\root\data\locale\ck\epk\` — file game asli nggak disentuh.
 
-Perintah ini menyalin file EPK ke:
-```
-%LOCALAPPDATA%\typemoon\fsn2\data\root\data\locale\ck\epk\
-```
-Game membaca override dari lokasi ini secara otomatis — **file game asli tidak disentuh sama sekali**.
-
-**Versi Crack / Portable:**
-
+**Crack/Portable:**
 ```bash
 python fsn-tools.py patch launcher ./my_patch/ \
     --game-exe "C:\Games\Fate\fsn2-win64vc14-release.exe"
 ```
+Bikin file batch yang set `%LOCALAPPDATA%` ke subfolder patch sebelum launch game.
 
-Membuat file batch yang mengatur `%LOCALAPPDATA%` ke subfolder patch sebelum meluncurkan game. File game asli **tidak pernah diubah**.
-
-**Dry run (simulasi tanpa menulis file):**
-
+**Dry run (simulasi):**
 ```bash
 python fsn-tools.py patch deploy ./my_patch/ --dry-run
 ```
@@ -290,27 +227,14 @@ python fsn-tools.py patch deploy ./my_patch/ --dry-run
 
 ## Memilih Bahasa Target: `ck` vs `us`
 
-Setelah `patch build`, hasil patch akan berada di:
+Game FSN Remastered punya dua locale:
 
-```
-my_patch/root/data/locale/ck/epk/HASH.epk
-```
+| Folder | Bahasa | Jumlah EPK |
+|--------|--------|------------|
+| `ck` | Mandarin | 727 EPK — **target translasi utama** |
+| `us` | Inggris | 727 EPK |
 
-Game FSN Remastered memiliki dua locale teks:
-
-| Folder | Bahasa | Keterangan |
-|--------|--------|-----------|
-| `ck`   | Mandarin (Chinese) | Target terjemahan utama, berisi 727 EPK |
-| `us`   | Inggris (English)  | Teks UI dan beberapa adegan, berisi 727 EPK |
-
-**Untuk menarget teks bahasa Inggris**, cukup rename folder `ck` menjadi `us` di dalam hasil `patch build` sebelum deploy:
-
-**Cara rename di Windows Explorer:**
-1. Buka `my_patch\root\data\locale\`
-2. Klik kanan folder `ck` → **Rename** → ketik `us`
-3. Jalankan `patch deploy` seperti biasa
-
-**Cara rename via Command Prompt / PowerShell:**
+Kalau mau target teks Inggris, rename folder `ck` → `us` di hasil `patch build` sebelum deploy:
 
 ```powershell
 # PowerShell
@@ -320,35 +244,7 @@ Rename-Item "my_patch\root\data\locale\ck" "us"
 ren "my_patch\root\data\locale\ck" "us"
 ```
 
-Setelah rename, struktur patch menjadi:
-
-```
-my_patch/
-└── root/
-    └── data/
-        └── locale/
-            └── us/          ← hasil rename dari ck
-                └── epk/
-                    └── HASH.epk
-```
-
-Kemudian deploy seperti biasa:
-
-```bash
-python fsn-tools.py patch deploy ./my_patch/
-```
-
-> **Catatan:** Kamu juga bisa men-deploy keduanya sekaligus dengan memiliki folder `ck` dan `us` di dalam `my_patch/root/data/locale/` secara bersamaan, jika ingin menimpa kedua bahasa.
-
----
-
-## Bukti Keberhasilan
-
-Berikut adalah bukti bahwa proses translasi berhasil dijalankan — teks di dalam game berhasil diubah menggunakan toolkit ini:
-
-![Bukti script berhasil diubah](https://i.imgur.com/q9K7bpr.png)
-
-*File `.epk_dec` berhasil diekstrak, diedit, di-enkripsi ulang via `patch build`, dan terbaca oleh game setelah `patch deploy`.*
+Bisa juga deploy keduanya sekaligus dengan punya folder `ck` dan `us` sekaligus di `my_patch/root/data/locale/`.
 
 ---
 
@@ -358,13 +254,13 @@ Berikut adalah bukti bahwa proses translasi berhasil dijalankan — teks di dala
 fsn-tools.py  [--verbose]  [--key-info]
 
   unpack
-    fpd   <file.bin> [file.bin ...]  --key <decryptKey.bin>  --out <dir>
-    dat   <pack_dir>                                          --out <dir>
-    auto  <pack_dir>                 --key <decryptKey.bin>  --out <dir>
+    fpd   <file.bin> [...]  --key <decryptKey.bin>  --out <dir>
+    dat   <pack_dir>                                 --out <dir>
+    auto  <pack_dir>        --key <decryptKey.bin>  --out <dir>
 
   epk
-    dec   <file.epk> [...]  --main-exe <exe>  --some-key <key>  [--out <dir>]
-    enc   <file.epk_dec> [...]  --main-exe <exe>  --some-key <key>  [--out <dir>]
+    dec   <file.epk> [...]    --main-exe <exe>  --some-key <key>  [--out <dir>]
+    enc   <file.epk_dec> [...] --main-exe <exe>  --some-key <key>  [--out <dir>]
     info  <file.epk_dec> [...]
     list  <directory>
 
@@ -387,14 +283,13 @@ fsn-tools.py  [--verbose]  [--key-info]
     hash  <"nama skrip"> [...]
 ```
 
-> Default path untuk `--main-exe` dan `--some-key` adalah `keys/main.exe` dan `keys/SomeKey.bin`.  
-> Jika key berada di lokasi default, kedua argumen tersebut bisa dihilangkan dari perintah.
+> Default `--main-exe` dan `--some-key` adalah `keys/main.exe` dan `keys/SomeKey.bin` — kalau udah di lokasi itu, dua argumen ini bisa dihilangkan.
 
 ---
 
 ## Format Teks EPK
 
-Setelah didekripsi, file EPK adalah teks UTF-8 biasa:
+Setelah dekripsi, file EPK adalah teks UTF-8 biasa:
 
 ```
 DAT
@@ -405,98 +300,72 @@ id=qid::label=str::text=lstr::
 
 Field: `id :: $$$placeholder$$$ :: text :: [markup tambahan]`
 
-**Tag markup — harus dipertahankan saat menerjemahkan:**
+**Tag markup — harus dipertahankan:**
 
 | Tag | Arti |
 |-----|------|
 | `[lr]` | Ganti baris + tunggu klik |
-| `[l]`  | Tunggu klik |
-| `[p]`  | Ganti halaman |
-| `[r]`  | Baris baru |
-| `[ruby text="X"]` | Anotasi furigana / ruby |
+| `[l]` | Tunggu klik |
+| `[p]` | Ganti halaman |
+| `[r]` | Baris baru |
+| `[ruby text="X"]` | Anotasi furigana/ruby |
 
 ---
 
 ## Struktur File Game
 
-Aset game tersebar di **dua folder terpisah** dengan fungsi yang berbeda:
-
 ```
-[root instalasi game]/
-├── obb/          ← skrip dialog, suara, UI (dalam .bin terenkripsi)
-└── pack/         ← aset UI gambar (dalam .dat, bisa dibuka via fileinfo)
+[root instalasi]/
+├── obb/    ← skrip dialog, suara, UI (dalam .bin terenkripsi)
+└── pack/   ← aset UI gambar (dalam .dat)
 ```
 
----
-
-### Folder `/obb/` — Skrip, Suara, dan UI Terenkripsi
-
-Folder ini adalah yang **paling krusial** untuk keperluan translasi maupun modding konten.  
-Berisi file `.bin` berformat FPD yang menyimpan skrip dialog, file EPK, aset suara, dan grafis UI tertentu.
+### `/obb/` — Skrip, Suara, UI
 
 ```
 obb/
 ├── pack00m.bin      ← FPD pack UTAMA: 6805 entri
-│                        728 skrip .ks (dialog & logika game)
-│                        2188 file .epk (teks dialog terenkripsi)
-│                        aset grafis & audio tambahan
-├── patch00m.bin     ← FPD patch / update: 628 entri (subset dari pack00m)
-├── patch00d.bin     ← FPD patch khusus grafis UI
-└── movie.dat        ← file OP movie
+│                        728 skrip .ks, 2188 file .epk, grafis & audio
+├── patch00m.bin     ← FPD patch/update: 628 entri
+├── patch00d.bin     ← FPD khusus grafis UI
+└── movie.dat        ← OP movie
 ```
-
-**Yang bisa kamu modifikasi dari `/obb/`:**
 
 | Target | File Sumber | Cara Akses |
 |--------|-------------|------------|
-| Dialog / teks cerita | `pack00m.bin` atau `patch00m.bin` | `unpack` → `epk dec` → edit → `patch build` |
-| Teks UI (menu, tombol) | `pack00m.bin` (EPK `uistring`, `statictext`) | sama seperti di atas |
-| File suara | `pack00m.bin` atau `patch00m.bin` | `unpack` → ekstrak manual |
+| Dialog / teks cerita | `pack00m.bin` / `patch00m.bin` | `unpack` → `epk dec` → edit → `patch build` |
+| Teks UI (menu, tombol) | `pack00m.bin` (EPK `uistring`, `statictext`) | sama |
+| File suara | `pack00m.bin` / `patch00m.bin` | `unpack` → ekstrak manual |
 
----
-
-### Folder `/pack/` — Aset Grafis UI (WebP)
-
-Folder ini berisi container `.dat` yang menyimpan gambar-gambar antarmuka game dalam format **WebP** — seperti tombol, background menu, ilustrasi UI, dan lain-lain.
+### `/pack/` — Aset Grafis UI (WebP)
 
 ```
 pack/
-├── fileinfo_*.txt   ← file indeks: berisi daftar nama file & offset di dalam .dat
+├── fileinfo_*.txt   ← indeks: daftar nama file & offset di dalam .dat
 └── *.dat            ← container aset gambar (WebP, PNG, dll.)
 ```
 
-File `fileinfo_*.txt` berfungsi sebagai **peta** untuk membaca isi `.dat` — tanpa file ini kamu tidak bisa tahu file apa yang ada di dalam setiap `.dat`. Buka dengan editor teks biasa untuk melihat daftarnya.
+Buka `fileinfo_*.txt` dengan editor teks untuk lihat isinya. Gunakan `python fsn-tools.py unpack dat <pack_dir> --out <dir>` untuk ekstrak.
 
-**Yang bisa kamu modifikasi dari `/pack/`:**
-
-| Target | File Sumber | Cara Akses |
-|--------|-------------|------------|
-| Gambar UI / tombol / background menu | `*.dat` | Baca `fileinfo_*.txt` untuk tahu offset, lalu ekstrak manual |
-| Aset WebP (bisa diedit di Photoshop/GIMP) | di dalam `.dat` | Ekstrak → edit → pack ulang |
-
-> **Tip:** Gunakan `python fsn-tools.py unpack dat <pack_dir> --out <dir>` untuk mengekstrak isi container `.dat` dari folder `/pack/`.
-
----
-
-### Grup locale EPK di dalam pack00m.bin
+### Grup Locale EPK di pack00m.bin
 
 | Path | Jumlah | Fungsi |
 |------|--------|--------|
-| `root/data/locale/ck/epk/` | 727 | **String Mandarin — target translasi utama** |
-| `root/data/locale/us/epk/` | 727 | String Inggris (UI + beberapa adegan) |
-| `root/data/epk/` | 734 | Salinan base/fallback + EPK khusus |
+| `root/data/locale/ck/epk/` | 727 | **Mandarin — target utama** |
+| `root/data/locale/us/epk/` | 727 | Inggris (UI + beberapa adegan) |
+| `root/data/epk/` | 734 | Base/fallback + EPK khusus |
 
-EPK bernama khusus (bukan spesifik per adegan):
+EPK dengan nama khusus (bukan per adegan):
 
 | Nama | Isi |
 |------|-----|
 | `uistring` | Label menu, tombol, teks sistem |
 | `statictext` | Layar judul, nama chapter |
 | `uiconst` | Konstanta UI |
-| `timeline_text` | Label flowchart / timeline |
+| `timeline_text` | Label flowchart/timeline |
 | `weapon_data` | Deskripsi Noble Phantasm |
-| `servant_data` | Teks profil Servant |
-| `correct_data` | Data pilihan / jawaban |
+| `servant_data` | Profil Servant |
+| `correct_data` | Data pilihan/jawaban |
 | `bgm_flag` | Nama track BGM |
 
 ---
@@ -505,17 +374,17 @@ EPK bernama khusus (bukan spesifik per adegan):
 
 ### `main.exe failed (code 3221225781)`
 
-Kode `0xC0000135` adalah status Windows "DLL not found". Ada tiga penyebab:
+Kode `0xC0000135` = Windows "DLL not found". Ada tiga kemungkinan:
 
-**Penyebab A — Nama file salah (sudah diperbaiki di toolkit ini)**
+**A — Nama file salah**
 
-Saat FPD mengekstrak EPK, file diberi nama dengan path penuh menggunakan `#` sebagai pemisah:
+Saat FPD mengekstrak EPK, nama filenya pakai path penuh dengan `#` sebagai pemisah:
 ```
 root#data#locale#ck#epk#HASH.epk
 ```
-`main.exe` membaca stem dari `argv[1]` untuk menurunkan kunci kriptografi. Jika menerima nama lengkap, stem-nya menjadi `root#data#locale#ck#epk#HASH` (46 karakter) alih-alih hanya `HASH` (26 karakter) — stem salah → keystream salah → crash.
+`main.exe` baca stem dari `argv[1]` buat nurunkan kunci kriptografi. Kalau stemnya jadi `root#data#locale#ck#epk#HASH` (46 karakter) bukannya cuma `HASH` (26 karakter) → keystream salah → crash.
 
-Toolkit ini sudah otomatis mengganti nama file ke `HASH.epk` di direktori temp terisolasi sebelum memanggil `main.exe`. Jika memanggil `main.exe` secara manual, selalu rename file lebih dulu:
+Toolkit ini sudah otomatis rename file ke `HASH.epk` di direktori temp sebelum panggil `main.exe`. Kalau pakai `main.exe` manual, rename dulu:
 
 ```bash
 # SALAH
@@ -526,13 +395,11 @@ copy root#data#locale#ck#epk#HASH.epk HASH.epk
 main.exe dec HASH.epk
 ```
 
-**Penyebab B — Visual C++ runtime tidak ada (Windows 7 / 8.1)**
+**B — Visual C++ runtime tidak ada (Windows 7/8.1)**
 
-Windows 10+ sudah menyertakan runtime yang dibutuhkan. Untuk Windows lama:
-- Install [Visual C++ 2015–2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-- Atau Windows Update KB2999226
+Windows 10+ sudah ada. Untuk Windows lama, install [Visual C++ 2015–2022 Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) atau Windows Update KB2999226.
 
-**Penyebab C — Wine belum terinstal (Linux)**
+**C — Wine belum terinstall (Linux)**
 
 ```bash
 sudo apt install wine
