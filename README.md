@@ -169,7 +169,7 @@ Open the JSON, fill in the `"translation"` field — don't change anything else:
 ]
 ```
 
-> ⚠️ Preserve markup tags such as `[lr]`, `[l]`, `[p]`, `[r]`, `[ruby text="X"]`. Leave `"translation"` empty if you want to keep the original text.
+>  Preserve markup tags such as `[lr]`, `[l]`, `[p]`, `[r]`, `[ruby text="X"]`. Leave `"translation"` empty if you want to keep the original text.
 
 ---
 
